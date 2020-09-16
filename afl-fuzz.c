@@ -42,6 +42,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include "parse.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -122,6 +123,7 @@ EXP_ST u8 skip_deterministic, /* Skip deterministic stages?       */
     not_on_tty,               /* stdout is not a tty              */
     term_too_small,           /* terminal dimensions too small    */
     uses_asan,                /* Target uses ASAN?                */
+    argv_no_forkserver,       /* SQ-fuzz close forkserver         */
     no_forkserver,            /* Disable forkserver?              */
     crash_mode,               /* Crash mode! Yeah!                */
     in_place_resume,          /* Attempt in-place resume?         */
@@ -240,9 +242,9 @@ static FILE *plot_file; /* Gnuplot output file              */
 struct queue_entry
 {
 
-  u8 *fname; /* File name for the test case      */
-  u32 len;   /* Input length                     */
-
+  u8 *fname;        /* File name for the test case      */
+  u8 *argfname;     /* SQ-fuzz arg file      */
+  u32 len;          /* Input length                     */
   u8 cal_failed,    /* Calibration failed?              */
       trim_done,    /* Trimmed?                         */
       was_fuzzed,   /* Had any fuzzing done yet?        */
@@ -295,6 +297,14 @@ static s8 interesting_8[] = {INTERESTING_8};
 static s16 interesting_16[] = {INTERESTING_8, INTERESTING_16};
 static s32 interesting_32[] = {INTERESTING_8, INTERESTING_16, INTERESTING_32};
 
+/* SQ-fuzz argv_flag */
+static u8 argv_fuzz_flag = 0;
+/* SQ-fuzz IMPLICIT_VARIABLES */
+char IMPLICIT_VARIABLES[][16] = {
+    "\\[INPUT_FILE\\]",
+    "\\[INT\\]",
+    "\\[STRING\\]",
+    "\\[UNSIINT\\]"};
 /* Fuzzing stages */
 
 enum
@@ -402,6 +412,40 @@ static void shuffle_ptrs(void **ptrs, u32 cnt)
   }
 }
 
+/*SQ-fuzz*/
+
+/*
+int PARA_MUST_IS_MUTABLE[parameter_array_size];
+int PARA_NOT_MUST_IS_MUTABLE[parameter_array_size];
+
+static void check_argv_mutable()
+{
+
+  ACTF("Check argv is mutable....");
+
+  for (int i = 0; i < must_parameter_count; i++)
+  {
+    char *pch = strstr(must_parameter[i], "[");
+    if (pch != NULL)
+    {
+      printf("must mutate %d\n", i);
+      PARA_MUST_IS_MUTABLE[i] = 1;
+    }
+  }
+
+  for (int i = 0; i < not_must_parameter_count; i++)
+  {
+    char *pch = strstr(not_must_parameter[i], "[");
+    if (pch != NULL)
+    {
+      printf("not must mutate %d\n", i);
+      PARA_NOT_MUST_IS_MUTABLE[i] = 1;
+    }
+  }
+
+  OKF("Finish checking!");
+}
+*/
 #ifdef HAVE_AFFINITY
 
 /* Build a list of processes bound to specific cores. Returns -1 if nothing
@@ -2066,6 +2110,12 @@ static void destroy_extras(void)
 
 EXP_ST void init_forkserver(char **argv)
 {
+  // char **now = argv;
+  // while (*now)
+  // {
+  //   OKF(" %s \n", *now);
+  //   now++;
+  // }
 
   static struct itimerval it;
   int st_pipe[2], ctl_pipe[2];
@@ -2221,7 +2271,7 @@ EXP_ST void init_forkserver(char **argv)
 
   if (rlen == 4)
   {
-    OKF("All right - fork server is up.");
+    // OKF("All right - fork server is up.");
     return;
   }
 
@@ -2364,7 +2414,6 @@ EXP_ST void init_forkserver(char **argv)
 
 static u8 run_target(char **argv, u32 timeout)
 {
-
   static struct itimerval it;
   static u32 prev_timed_out = 0;
   static u64 exec_ms = 0;
@@ -2386,7 +2435,7 @@ static u8 run_target(char **argv, u32 timeout)
      execve(). There is a bit of code duplication between here and 
      init_forkserver(), but c'est la vie. */
 
-  if (dumb_mode == 1 || no_forkserver)
+  if (dumb_mode == 1 || no_forkserver || argv_no_forkserver)
   {
 
     child_pid = fork();
@@ -2396,7 +2445,6 @@ static u8 run_target(char **argv, u32 timeout)
 
     if (!child_pid)
     {
-
       struct rlimit r;
 
       if (mem_limit)
@@ -2505,7 +2553,7 @@ static u8 run_target(char **argv, u32 timeout)
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
-  if (dumb_mode == 1 || no_forkserver)
+  if (dumb_mode == 1 || no_forkserver || argv_no_forkserver)
   {
 
     if (waitpid(child_pid, &status, 0) <= 0)
@@ -2577,7 +2625,7 @@ static u8 run_target(char **argv, u32 timeout)
     return FAULT_CRASH;
   }
 
-  if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+  if ((dumb_mode == 1 || no_forkserver || argv_no_forkserver) && tb4 == EXEC_FAIL_SIG)
     return FAULT_ERROR;
 
   /* It makes sense to account for the slowest units only if the testcase was run
@@ -3114,6 +3162,7 @@ static void pivot_inputs(void)
   {
 
     u8 *nfn, *rsl = strrchr(q->fname, '/');
+    // u8 *argnfn; // add SQ-fuzz arg file
     u32 orig_id;
 
     if (!rsl)
@@ -3140,7 +3189,7 @@ static void pivot_inputs(void)
 
       resuming_fuzz = 1;
       nfn = alloc_printf("%s/queue/%s", out_dir, rsl);
-
+      // argnfn = alloc_printf("%s/queue_info/queue/%s", out_dir, rsl);
       /* Since we're at it, let's also try to find parent and figure out the
          appropriate depth for this entry. */
 
@@ -3174,13 +3223,30 @@ static void pivot_inputs(void)
       else
         use_name = rsl;
       nfn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, id, use_name);
+      // argnfn = alloc_printf("%s/queue_info/queue/id:%06u,orig:%s", out_dir, id, use_name);
 
 #else
 
       nfn = alloc_printf("%s/queue/id_%06u", out_dir, id);
+      argnfn = alloc_printf("%s/queue_info/queue/id_%06u", out_dir, id);
 
 #endif /* ^!SIMPLE_FILES */
     }
+
+    /*SQ-fuzz write queue info*/
+
+    // FILE *outfp;
+    // outfp = fopen(nfn, "w");
+    // fprintf(outfp, "argv : ");
+    // char **now = argv;
+    // while (*now)
+    // {
+    //   fprintf(outfp, "%s ", *now);
+
+    //   now++;
+    // }
+
+    // fclose(outfp);
 
     /* Pivot to the new queue entry. */
 
@@ -3304,8 +3370,9 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
 {
 
   u8 *fn = "";
+  u8 *qn = "";
   u8 hnb;
-  s32 fd;
+  s32 fd, qd;
   u8 keeping = 0, res;
 
   if (fault == crash_mode)
@@ -3331,6 +3398,19 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
     fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
 
 #endif /* ^!SIMPLE_FILES */
+    /* SQ-fuzz open arg file */
+    if (argv_fuzz_flag == 1)
+    {
+#ifndef SIMPLE_FILES
+
+      qn = alloc_printf("%s/queue_info/queue/id:%06u,%s", out_dir, queued_paths,
+                        describe_op(hnb));
+#else
+
+      qn = alloc_printf("%s/queue_info/queue/id_%06u", out_dir, queued_paths);
+
+#endif /* ^!SIMPLE_FILES */
+    }
 
     add_to_queue(fn, len, 0);
 
@@ -3357,6 +3437,21 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
     close(fd);
 
     keeping = 1;
+    /* SQ-fuzz write argv info */
+    if (argv_fuzz_flag == 1)
+    {
+      qd = open(qn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (qd < 0)
+        PFATAL("Unable to create '%s'", qn);
+      char **now = argv;
+      while (*now)
+      {
+        ck_write(qd, *now, strlen(*now), qn);
+        ck_write(qd, " ", 1, qn);
+        now++;
+      }
+      close(fd);
+    }
   }
 
   switch (fault)
@@ -3423,6 +3518,20 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
 
 #endif /* ^!SIMPLE_FILES */
 
+    if (argv_fuzz_flag == 1)
+    {
+
+#ifndef SIMPLE_FILES
+
+      qn = alloc_printf("%s/queue_info/hangs/id:%06llu,%s", out_dir, unique_hangs,
+                        describe_op(0));
+#else
+
+      qn = alloc_printf("%s/queue_info/hangs/id_%06llu", out_dir, unique_hangs);
+
+#endif /* ^!SIMPLE_FILES */
+    }
+
     unique_hangs++;
 
     last_hang_time = get_cur_time();
@@ -3470,6 +3579,21 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
 
 #endif /* ^!SIMPLE_FILES */
 
+    if (argv_fuzz_flag == 1)
+    {
+
+#ifndef SIMPLE_FILES
+
+      qn = alloc_printf("%s/queue_info/crashes/id:%06llu,sig:%02u,%s", out_dir,
+                        unique_crashes, kill_signal, describe_op(0));
+#else
+
+      qn = alloc_printf("%s/queue_info/crashes/id_%06llu_%02u", , out_dir, unique_crashes,
+                        kill_signal);
+
+#endif /* ^!SIMPLE_FILES */
+    }
+
     unique_crashes++;
 
     last_crash_time = get_cur_time();
@@ -3495,6 +3619,22 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
 
   ck_free(fn);
 
+  /* SQ-fuzz write argv info */
+  if (argv_fuzz_flag == 1)
+  {
+    qd = open(qn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (qd < 0)
+      PFATAL("Unable to create '%s'", qn);
+    char **now = argv;
+    while (*now)
+    {
+      ck_write(qd, *now, strlen(*now), qn);
+      ck_write(qd, " ", 1, qn);
+      now++;
+    }
+    close(fd);
+  }
+  ck_free(qn);
   return keeping;
 }
 
@@ -4923,6 +5063,50 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
     cur_skipped_paths++;
     return 1;
   }
+
+  /* This handles FAULT_ERROR for us: */
+
+  queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+
+  if (!(stage_cur % stats_update_freq) || stage_cur + 1 == stage_max)
+    show_stats();
+
+  return 0;
+}
+
+/* SQ-fuzz run rarget */
+
+EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
+{
+  u8 fault;
+
+  if (post_handler)
+  {
+
+    out_buf = post_handler(out_buf, &len);
+    if (!out_buf || !len)
+      return 0;
+  }
+
+  // write_to_testcase(out_buf, len);  testcase is same,dont write again
+
+  /* use exec to run */
+  fault = run_target(argv, exec_tmout);
+
+  if (stop_soon)
+    return 1;
+
+  if (fault == FAULT_TMOUT)
+  {
+    // todo : delete?
+    if (subseq_tmouts++ > TMOUT_LIMIT)
+    {
+      cur_skipped_paths++;
+      return 1;
+    }
+  }
+  else
+    subseq_tmouts = 0;
 
   /* This handles FAULT_ERROR for us: */
 
@@ -7117,6 +7301,176 @@ abandon_entry:
 #undef FLIP_BIT
 }
 
+static void reset_forkserv_argvs(char **new_argvs)
+{
+
+  if (forksrv_pid > 0)
+  {
+    kill(forksrv_pid, SIGKILL);
+    if (waitpid(forksrv_pid, NULL, 0) <= 0)
+    {
+      WARNF("error waitpid\n");
+    }
+    forksrv_pid = 0;
+  }
+
+  if (child_pid > 0)
+  {
+    kill(child_pid, SIGKILL);
+    child_pid = 0;
+  }
+
+  if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
+  {
+    close(fsrv_ctl_fd);
+    close(fsrv_st_fd);
+
+    init_forkserver(new_argvs);
+  }
+}
+
+static void random_generate_arg(char **new_argv, char **argv)
+{
+  int argv_index = 0;
+  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
+  sprintf(new_argv[argv_index], "%s", *argv);
+  argv_index++;
+  for (int i = 0; i < parameter_count; i++)
+  {
+    if (parameter[i].must)
+    {
+      char *substr = NULL;
+      char buf[parameter_strings_long];
+
+      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      substr = strtok(buf, " ");
+
+      while (substr != NULL)
+      {
+        new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(substr) + 1);
+        sprintf(new_argv[argv_index], "%s", substr);
+        argv_index++;
+
+        substr = strtok(NULL, " ");
+      }
+    }
+    else if (UR(2) != 0)
+    {
+      char *substr = NULL;
+      char buf[parameter_strings_long];
+      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      substr = strtok(buf, " ");
+
+      while (substr != NULL)
+      {
+        new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(substr) + 1);
+        sprintf(new_argv[argv_index], "%s", substr);
+        argv_index++;
+
+        substr = strtok(NULL, " ");
+      }
+    }
+  }
+
+  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+  sprintf(new_argv[argv_index], "%s", file_parameter);
+}
+
+/* SQ-fuzz fuzz_one */
+
+static char **argv_fuzz_one(char **argv)
+{
+  s32 len, fd;
+  u8 *in_buf, *out_buf, *orig_in;
+  char **save = NULL;
+
+  if (not_on_tty)
+  {
+    ACTF("Fuzzing test case #%u (%u total, %llu uniq crashes found)...",
+         current_entry, queued_paths, unique_crashes);
+    fflush(stdout);
+  }
+
+  /* Map the test case into memory. */
+
+  fd = open(queue_cur->fname, O_RDONLY);
+
+  if (fd < 0)
+    PFATAL("Unable to open '%s'", queue_cur->fname);
+
+  len = queue_cur->len;
+
+  in_buf = mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  orig_in = in_buf;
+
+  if (orig_in == MAP_FAILED)
+    PFATAL("Unable to mmap '%s'", queue_cur->fname);
+
+  close(fd);
+
+  write_to_testcase(in_buf, len);
+
+  out_buf = (u8 *)ck_alloc_nozero(len);
+  /* skip CALIBRATION, TRIMMING, PERFORMANCE SCORE */
+
+  stage_short = "arg1";
+  stage_max = 100;
+  stage_name = "arg_gen";
+  char **new_argv;
+
+  for (stage_cur = 0; stage_cur < stage_max; stage_cur++)
+  {
+    new_argv = (char **)ck_alloc(sizeof(char *) * 200);
+    memset(new_argv, 0, sizeof(char *) * 200);
+    random_generate_arg(new_argv, argv);
+
+    u32 original_queued_paths = queued_paths;
+    if (argv_common_fuzz_stuff(new_argv, out_buf, len))
+      goto argv_abandon_entry;
+
+    if (original_queued_paths == queued_paths)
+    {
+      char **now = new_argv;
+      while (*now)
+      {
+        ck_free(*now);
+        now++;
+      }
+      ck_free(new_argv);
+    }
+    else
+    {
+      char **now = save;
+      if (now)
+      {
+        while (*now)
+        {
+          ck_free(*now);
+          now++;
+        }
+      }
+
+      save = new_argv;
+    }
+  }
+
+argv_abandon_entry:
+  munmap(orig_in, queue_cur->len);
+
+  if (in_buf != orig_in)
+    ck_free(in_buf);
+  ck_free(out_buf);
+
+  if (save)
+  {
+    return save;
+  }
+  else
+  {
+    return argv;
+  }
+}
+
 /* Grab interesting test cases from other fuzzers. */
 
 static void sync_fuzzers(char **argv)
@@ -7710,6 +8064,29 @@ EXP_ST void setup_dirs_fds(void)
     PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
+  /* SQ-fuzz 建立 argc 資料夾 */
+  if (argv_fuzz_flag)
+  {
+    tmp = alloc_printf("%s/queue_info", out_dir);
+    if (mkdir(tmp, 0700))
+      PFATAL("Unable to create '%s'", tmp);
+    ck_free(tmp);
+
+    tmp = alloc_printf("%s/queue_info/crashes", out_dir);
+    if (mkdir(tmp, 0700))
+      PFATAL("Unable to create '%s'", tmp);
+    ck_free(tmp);
+
+    tmp = alloc_printf("%s/queue_info/hangs", out_dir);
+    if (mkdir(tmp, 0700))
+      PFATAL("Unable to create '%s'", tmp);
+    ck_free(tmp);
+
+    tmp = alloc_printf("%s/queue_info/queue", out_dir);
+    if (mkdir(tmp, 0700))
+      PFATAL("Unable to create '%s'", tmp);
+    ck_free(tmp);
+  }
   /* Generally useful file descriptors. */
 
   dev_null_fd = open("/dev/null", O_RDWR);
@@ -8106,6 +8483,47 @@ EXP_ST void detect_file_args(char **argv)
   free(cwd); /* not tracked */
 }
 
+/* Detect @@ in args. */
+
+EXP_ST void detect_file_parm()
+{
+  u8 *cwd = getcwd(NULL, 0);
+
+  if (!cwd)
+    PFATAL("getcwd() failed");
+
+  u8 *aa_loc = strstr(file_parameter, "@@");
+
+  if (aa_loc)
+  {
+
+    u8 *aa_subst, *n_arg;
+
+    /* If we don't have a file name chosen yet, use a safe default. */
+
+    if (!out_file)
+      out_file = alloc_printf("%s/.cur_input", out_dir);
+
+    /* Be sure that we're always using fully-qualified paths. */
+
+    if (out_file[0] == '/')
+      aa_subst = out_file;
+    else
+      aa_subst = alloc_printf("%s/%s", cwd, out_file);
+
+    /* Construct a replacement argv value. */
+    *aa_loc = 0;
+    // printf("do\n%s\n%s\n%s\n", file_parameter, aa_subst, aa_loc + 2);
+    n_arg = alloc_printf("%s%s%s", file_parameter, aa_subst, aa_loc + 2);
+    strcpy(file_parameter, n_arg);
+
+    if (out_file[0] != '/')
+      ck_free(aa_subst);
+  }
+
+  free(cwd); /* not tracked */
+}
+
 /* Set up signal handlers. More complicated that needs to be, because libc on
    Solaris doesn't resume interrupted reads(), sets SA_RESETHAND when you call
    siginterrupt(), and does other unnecessary things. */
@@ -8276,8 +8694,9 @@ int main(int argc, char **argv)
 
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
+  char *xml_position;
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:s:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
 
     switch (opt)
     {
@@ -8298,6 +8717,23 @@ int main(int argc, char **argv)
       if (out_dir)
         FATAL("Multiple -o options not supported");
       out_dir = optarg;
+      break;
+
+    case 's': /* setting xml file */
+
+      xml_position = optarg;
+      if (access(xml_position, F_OK) != -1)
+      {
+        OKF("xml_position : %s", xml_position);
+        parse_xml(xml_position);
+      }
+      else
+      {
+        FATAL("File doesn't exist!");
+      }
+
+      argv_fuzz_flag = 1;
+
       break;
 
     case 'M':
@@ -8505,6 +8941,7 @@ int main(int argc, char **argv)
       usage(argv[0]);
     }
 
+  // 沒有這些就印出使用方法且離開
   if (optind == argc || !in_dir || !out_dir)
     usage(argv[0]);
 
@@ -8527,7 +8964,10 @@ int main(int argc, char **argv)
   }
 
   if (getenv("AFL_NO_FORKSRV"))
+  {
     no_forkserver = 1;
+    OKF("no_fork_server mode");
+  }
   if (getenv("AFL_NO_CPU_RED"))
     no_cpu_meter_red = 1;
   if (getenv("AFL_NO_ARITH"))
@@ -8556,6 +8996,7 @@ int main(int argc, char **argv)
   if (getenv("AFL_LD_PRELOAD"))
     FATAL("Use AFL_PRELOAD instead of AFL_LD_PRELOAD");
 
+  // save in orig_cmdline e.g. ./afl-fuzz -s ../parameters.xml -i i1 -o o1 -- 123
   save_cmdline(argc, argv);
 
   fix_up_banner(argv[optind]);
@@ -8568,30 +9009,45 @@ int main(int argc, char **argv)
   bind_to_free_cpu();
 #endif /* HAVE_AFFINITY */
 
+  // "echo core >/proc/sys/kernel/core_pattern"
+  // crash 回報給 cpu
   check_crash_handling();
+  // CPU frequency
   check_cpu_governor();
 
   setup_post();
+
+  //初始化shared memory
   setup_shm();
   init_count_class16();
 
+  //創建工作資料夾（hang, queue....
   setup_dirs_fds();
   read_testcases();
   load_auto();
 
+  //copy files from original dir to xxx/queue
   pivot_inputs();
 
+  //載入字典檔
   if (extras_dir)
     load_extras(extras_dir);
 
+  //resume時，定義這一次模糊測試的timeout為多少
   if (!timeout_given)
     find_timeout();
 
+  //偵測argvs裡有沒有"@@"
   detect_file_args(argv + optind + 1);
-
+  if (argv_fuzz_flag)
+  {
+    detect_file_parm();
+    printf("file_parameter = %s\n", file_parameter);
+  }
   if (!out_file)
     setup_stdio_file();
 
+  // 檢查是否為 shell 且有無插樁
   check_binary(argv[optind]);
 
   start_time = get_cur_time();
@@ -8600,7 +9056,15 @@ int main(int argc, char **argv)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
+  /* SQ-fuzz */
+  if (argv_fuzz_flag)
+  {
+    /*check argv mutable*/
+    // check_argv_mutable();
+    // TODO argv_pivot_inputs
+  }
 
+  // 測試現有文集
   perform_dry_run(use_argv);
 
   cull_queue();
@@ -8675,6 +9139,14 @@ int main(int argc, char **argv)
         sync_fuzzers(use_argv);
     }
 
+    // SQ-fuzz
+    if (argv_fuzz_flag)
+    {
+      argv_no_forkserver = 1;
+      use_argv = argv_fuzz_one(use_argv);
+      reset_forkserv_argvs(use_argv);
+      argv_no_forkserver = 0;
+    }
     skipped_fuzz = fuzz_one(use_argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz)

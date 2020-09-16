@@ -5,23 +5,18 @@
 #include <string.h>
 
 #define parameter_array_size 50
-#define parameter_strings_long 15
-
+#define parameter_strings_long 50
 #define variable_array_size 10
-#define variable_strings_size 30
-#define variable_strings_long 15
 
-char must_parameter[parameter_array_size][parameter_strings_long];
-int must_parameter_count;
-char not_must_parameter[parameter_array_size][parameter_strings_long];
-int not_must_parameter_count;
-struct variable_list
+struct parameter_list
 {
-    char name[variable_strings_long];
+    _Bool must;
     int count;
-    char variable[variable_strings_size][variable_strings_long];
+    char parameter[variable_array_size][parameter_strings_long];
 };
 
-struct variable_list variable[variable_array_size];
-int variable_count;
+char file_parameter[parameter_strings_long];
+struct parameter_list parameter[parameter_array_size];
+int parameter_count;
+
 void parse_xml(char *xml_posion);
