@@ -7,4 +7,4 @@
 ./AFL/sqfuzz -i i1 -o o1 -m none -s parameters.xml -- ~/afl-target/libjpeg-turbo/build/cjpeg
 ```
 ## 致謝
-使用 [SQ-fuzz](https://github.com/fdgkhdkgh/SQ-Fuzz]) 修改，對內部程式做優化。
+使用 [SQ-fuzz](https://github.com/fdgkhdkgh/SQ-Fuzz) 修改，對內部程式做優化。
