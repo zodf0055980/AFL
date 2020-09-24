@@ -242,17 +242,17 @@ static FILE *plot_file; /* Gnuplot output file              */
 struct queue_entry
 {
 
-  u8 *fname;        /* File name for the test case      */
-  u8 *argfname;     /* SQ-fuzz arg file      */
-  u32 len;          /* Input length                     */
-  u8 cal_failed,    /* Calibration failed?              */
-      trim_done,    /* Trimmed?                         */
-      was_fuzzed,   /* Had any fuzzing done yet?        */
-      passed_det,   /* Deterministic stages passed?     */
-      has_new_cov,  /* Triggers new coverage?           */
-      var_behavior, /* Variable behavior?               */
-      favored,      /* Currently favored?               */
-      fs_redundant; /* Marked as redundant in the fs?   */
+  u8 *fname;                        /* File name for the test case      */
+  _Bool argv[parameter_array_size]; /* SQ-fuzz argv path */
+  u32 len;                          /* Input length                     */
+  u8 cal_failed,                    /* Calibration failed?              */
+      trim_done,                    /* Trimmed?                         */
+      was_fuzzed,                   /* Had any fuzzing done yet?        */
+      passed_det,                   /* Deterministic stages passed?     */
+      has_new_cov,                  /* Triggers new coverage?           */
+      var_behavior,                 /* Variable behavior?               */
+      favored,                      /* Currently favored?               */
+      fs_redundant;                 /* Marked as redundant in the fs?   */
 
   u32 bitmap_size, /* Number of bits set in bitmap     */
       exec_cksum;  /* Checksum of the execution trace  */
@@ -412,40 +412,6 @@ static void shuffle_ptrs(void **ptrs, u32 cnt)
   }
 }
 
-/*SQ-fuzz*/
-
-/*
-int PARA_MUST_IS_MUTABLE[parameter_array_size];
-int PARA_NOT_MUST_IS_MUTABLE[parameter_array_size];
-
-static void check_argv_mutable()
-{
-
-  ACTF("Check argv is mutable....");
-
-  for (int i = 0; i < must_parameter_count; i++)
-  {
-    char *pch = strstr(must_parameter[i], "[");
-    if (pch != NULL)
-    {
-      printf("must mutate %d\n", i);
-      PARA_MUST_IS_MUTABLE[i] = 1;
-    }
-  }
-
-  for (int i = 0; i < not_must_parameter_count; i++)
-  {
-    char *pch = strstr(not_must_parameter[i], "[");
-    if (pch != NULL)
-    {
-      printf("not must mutate %d\n", i);
-      PARA_NOT_MUST_IS_MUTABLE[i] = 1;
-    }
-  }
-
-  OKF("Finish checking!");
-}
-*/
 #ifdef HAVE_AFFINITY
 
 /* Build a list of processes bound to specific cores. Returns -1 if nothing
@@ -851,6 +817,51 @@ static void mark_as_redundant(struct queue_entry *q, u8 state)
   }
 
   ck_free(fn);
+}
+
+/* SQ-fuzz mantain add argv queue info */
+static void argv_add_to_queue(u8 *fname, u32 len, u8 passed_det, _Bool argv_array[])
+{
+  struct queue_entry *q = ck_alloc(sizeof(struct queue_entry));
+
+  q->fname = fname;
+  q->len = len;
+  q->depth = cur_depth + 1;
+  q->passed_det = passed_det;
+  if (argv_array)
+  {
+    memcpy(q->argv, argv_array, sizeof(q->argv));
+  }
+  else
+  {
+    memset(q->argv, 0, sizeof(q->argv));
+  }
+
+  if (q->depth > max_depth)
+    max_depth = q->depth;
+
+  if (queue_top)
+  {
+
+    queue_top->next = q;
+    queue_top = q;
+  }
+  else
+    q_prev100 = queue = queue_top = q;
+
+  queued_paths++;
+  pending_not_fuzzed++;
+
+  cycles_wo_finds = 0;
+
+  if (!(queued_paths % 100))
+  {
+
+    q_prev100->next_100 = q;
+    q_prev100 = q;
+  }
+
+  last_path_time = get_cur_time();
 }
 
 /* Append new test case to the queue. */
@@ -1591,7 +1602,26 @@ static void read_testcases(void)
       passed_det = 1;
     ck_free(dfn);
 
-    add_to_queue(fn, st.st_size, passed_det);
+    _Bool arg[parameter_array_size] = {0};
+    for (int i = 0; i < parameter_count; i++)
+    {
+      if (parameter[i].must)
+      {
+        arg[i] = 1;
+      }
+      else
+      {
+        arg[i] = 0;
+      }
+    }
+    if (argv_fuzz_flag)
+    {
+      argv_add_to_queue(fn, st.st_size, passed_det, arg);
+    }
+    else
+    {
+      add_to_queue(fn, st.st_size, passed_det);
+    }
   }
 
   free(nl); /* not tracked */
@@ -2110,19 +2140,12 @@ static void destroy_extras(void)
 
 EXP_ST void init_forkserver(char **argv)
 {
-  // char **now = argv;
-  // while (*now)
-  // {
-  //   OKF(" %s \n", *now);
-  //   now++;
-  // }
-
   static struct itimerval it;
   int st_pipe[2], ctl_pipe[2];
   int status;
   s32 rlen;
 
-  ACTF("Spinning up the fork server...");
+  //ACTF("Spinning up the fork server...");
 
   if (pipe(st_pipe) || pipe(ctl_pipe))
     PFATAL("pipe() failed");
@@ -3233,21 +3256,6 @@ static void pivot_inputs(void)
 #endif /* ^!SIMPLE_FILES */
     }
 
-    /*SQ-fuzz write queue info*/
-
-    // FILE *outfp;
-    // outfp = fopen(nfn, "w");
-    // fprintf(outfp, "argv : ");
-    // char **now = argv;
-    // while (*now)
-    // {
-    //   fprintf(outfp, "%s ", *now);
-
-    //   now++;
-    // }
-
-    // fclose(outfp);
-
     /* Pivot to the new queue entry. */
 
     link_or_copy(q->fname, nfn);
@@ -3366,7 +3374,7 @@ static void write_crash_readme(void)
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 
-static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
+static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault, _Bool argv_array[])
 {
 
   u8 *fn = "";
@@ -3412,7 +3420,15 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault)
 #endif /* ^!SIMPLE_FILES */
     }
 
-    add_to_queue(fn, len, 0);
+    /* SQ-fuzz save */
+    if (argv_fuzz_flag)
+    {
+      argv_add_to_queue(fn, len, 0, argv_array);
+    }
+    else
+    {
+      add_to_queue(fn, len, 0);
+    }
 
     if (hnb == 2)
     {
@@ -4273,7 +4289,6 @@ static void check_term_size(void);
 
 static void show_stats(void)
 {
-
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
   static double avg_exec;
   double t_byte_ratio, stab_ratio;
@@ -4404,7 +4419,7 @@ static void show_stats(void)
   banner_pad = (80 - banner_len) / 2;
   memset(tmp, ' ', banner_pad);
 
-  sprintf(tmp + banner_pad, "%s " cLCY VERSION cLGN " (%s)", crash_mode ? cPIN "peruvian were-rabbit" : cYEL "american fuzzy lop", use_banner);
+  sprintf(tmp + banner_pad, "%s " cLCY VERSION cLGN " (%s)", crash_mode ? cPIN "peruvian were-rabbit" : cYEL "Yuan-fuzz", use_banner);
 
   SAYF("\n%s\n\n", tmp);
 
@@ -5066,7 +5081,7 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
 
   /* This handles FAULT_ERROR for us: */
 
-  queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+  queued_discovered += save_if_interesting(argv, out_buf, len, fault, queue_cur->argv);
 
   if (!(stage_cur % stats_update_freq) || stage_cur + 1 == stage_max)
     show_stats();
@@ -5076,17 +5091,17 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
 
 /* SQ-fuzz run rarget */
 
-EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
+EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len, _Bool argv_array[])
 {
   u8 fault;
 
-  if (post_handler)
-  {
+  // if (post_handler)   ???
+  // {
 
-    out_buf = post_handler(out_buf, &len);
-    if (!out_buf || !len)
-      return 0;
-  }
+  //   out_buf = post_handler(out_buf, &len);
+  //   if (!out_buf || !len)
+  //     return 0;
+  // }
 
   // write_to_testcase(out_buf, len);  testcase is same,dont write again
 
@@ -5110,7 +5125,7 @@ EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
 
   /* This handles FAULT_ERROR for us: */
 
-  queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+  queued_discovered += save_if_interesting(argv, out_buf, len, fault, argv_array);
 
   if (!(stage_cur % stats_update_freq) || stage_cur + 1 == stage_max)
     show_stats();
@@ -7301,6 +7316,8 @@ abandon_entry:
 #undef FLIP_BIT
 }
 
+/* SQ-fuzz reset forkserv */
+
 static void reset_forkserv_argvs(char **new_argvs)
 {
 
@@ -7329,7 +7346,43 @@ static void reset_forkserv_argvs(char **new_argvs)
   }
 }
 
-static void random_generate_arg(char **new_argv, char **argv)
+/* SQ-fuzz use argv array to malloc argv */
+
+static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
+{
+  int argv_index = 0;
+  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
+  sprintf(new_argv[argv_index], "%s", *argv);
+  argv_index++;
+  for (int i = 0; i < parameter_count; i++)
+  {
+    if (argv_array[i])
+    {
+      argv_array[i] = 1;
+      char *substr = NULL;
+      char buf[parameter_strings_long];
+
+      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      substr = strtok(buf, " ");
+
+      while (substr != NULL)
+      {
+        new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(substr) + 1);
+        sprintf(new_argv[argv_index], "%s", substr);
+        argv_index++;
+
+        substr = strtok(NULL, " ");
+      }
+    }
+  }
+
+  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+  sprintf(new_argv[argv_index], "%s", file_parameter);
+}
+
+/* SQ-fuzz generate random argv */
+
+static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[])
 {
   int argv_index = 0;
   new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
@@ -7339,6 +7392,7 @@ static void random_generate_arg(char **new_argv, char **argv)
   {
     if (parameter[i].must)
     {
+      argv_array[i] = 1;
       char *substr = NULL;
       char buf[parameter_strings_long];
 
@@ -7356,6 +7410,7 @@ static void random_generate_arg(char **new_argv, char **argv)
     }
     else if (UR(2) != 0)
     {
+      argv_array[i] = 1;
       char *substr = NULL;
       char buf[parameter_strings_long];
       strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
@@ -7382,7 +7437,6 @@ static char **argv_fuzz_one(char **argv)
 {
   s32 len, fd;
   u8 *in_buf, *out_buf, *orig_in;
-  char **save = NULL;
 
   if (not_on_tty)
   {
@@ -7417,41 +7471,26 @@ static char **argv_fuzz_one(char **argv)
   stage_max = 100;
   stage_name = "arg_gen";
   char **new_argv;
-
+  _Bool run_argv[parameter_array_size];
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++)
   {
     new_argv = (char **)ck_alloc(sizeof(char *) * 200);
     memset(new_argv, 0, sizeof(char *) * 200);
-    random_generate_arg(new_argv, argv);
+    memset(run_argv, 0, sizeof(run_argv));
 
-    u32 original_queued_paths = queued_paths;
-    if (argv_common_fuzz_stuff(new_argv, out_buf, len))
+    random_generate_arg(new_argv, argv, run_argv);
+
+    if (argv_common_fuzz_stuff(new_argv, out_buf, len, run_argv))
       goto argv_abandon_entry;
 
-    if (original_queued_paths == queued_paths)
+    char **now = new_argv;
+    while (*now)
     {
-      char **now = new_argv;
-      while (*now)
-      {
-        ck_free(*now);
-        now++;
-      }
-      ck_free(new_argv);
+      ck_free(*now);
+      now++;
     }
-    else
-    {
-      char **now = save;
-      if (now)
-      {
-        while (*now)
-        {
-          ck_free(*now);
-          now++;
-        }
-      }
-
-      save = new_argv;
-    }
+    ck_free(new_argv);
+    new_argv = NULL;
   }
 
 argv_abandon_entry:
@@ -7461,14 +7500,23 @@ argv_abandon_entry:
     ck_free(in_buf);
   ck_free(out_buf);
 
-  if (save)
+  if (new_argv != NULL)
   {
-    return save;
+    char **now = new_argv;
+    while (*now)
+    {
+      ck_free(*now);
+      now++;
+    }
+    if (new_argv)
+      ck_free(new_argv);
   }
-  else
-  {
-    return argv;
-  }
+
+  new_argv = (char **)ck_alloc(sizeof(char *) * 200);
+  memset(new_argv, 0, sizeof(char *) * 200);
+  generate_arg(new_argv, argv, queue_cur->argv);
+
+  return new_argv;
 }
 
 /* Grab interesting test cases from other fuzzers. */
@@ -7594,7 +7642,7 @@ static void sync_fuzzers(char **argv)
           return;
 
         syncing_party = sd_ent->d_name;
-        queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+        queued_imported += save_if_interesting(argv, mem, st.st_size, fault, queue_cur->argv);
         syncing_party = 0;
 
         munmap(mem, st.st_size);
@@ -9056,13 +9104,6 @@ int main(int argc, char **argv)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
-  /* SQ-fuzz */
-  if (argv_fuzz_flag)
-  {
-    /*check argv mutable*/
-    // check_argv_mutable();
-    // TODO argv_pivot_inputs
-  }
 
   // 測試現有文集
   perform_dry_run(use_argv);
@@ -9110,7 +9151,6 @@ int main(int argc, char **argv)
         seek_to--;
         queue_cur = queue_cur->next;
       }
-
       show_stats();
 
       if (not_on_tty)
@@ -9147,6 +9187,14 @@ int main(int argc, char **argv)
       reset_forkserv_argvs(use_argv);
       argv_no_forkserver = 0;
     }
+
+    // char **now = use_argv;
+    // while (*now)
+    // {
+    //   OKF("%s", *now);
+    //   now++;
+    // }
+
     skipped_fuzz = fuzz_one(use_argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz)
