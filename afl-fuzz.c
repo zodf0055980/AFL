@@ -7978,6 +7978,7 @@ static void usage(u8 *argv0)
 
        "Execution control settings:\n\n"
 
+       "  -s xml        - add argv file information\n"
        "  -f file       - location read by the fuzzed program (stdin)\n"
        "  -t msec       - timeout for each run (auto-scaled, 50-%u ms)\n"
        "  -m megs       - memory limit for child process (%u MB)\n"
