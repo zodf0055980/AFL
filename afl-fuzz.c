@@ -299,6 +299,9 @@ static s32 interesting_32[] = {INTERESTING_8, INTERESTING_16, INTERESTING_32};
 
 /* SQ-fuzz argv_flag */
 static u8 argv_fuzz_flag = 0;
+/* SQ-fuzz argv_flag */
+static u8 argv_front_flag = 0;
+
 /* SQ-fuzz IMPLICIT_VARIABLES */
 char IMPLICIT_VARIABLES[][16] = {
     "\\[INPUT_FILE\\]",
@@ -7354,6 +7357,14 @@ static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
   new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
   sprintf(new_argv[argv_index], "%s", *argv);
   argv_index++;
+
+  if (argv_front_flag)
+  {
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+    sprintf(new_argv[argv_index], "%s", file_parameter);
+    argv_index++;
+  }
+
   for (int i = 0; i < parameter_count; i++)
   {
     if (argv_array[i])
@@ -7376,8 +7387,11 @@ static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
     }
   }
 
-  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
-  sprintf(new_argv[argv_index], "%s", file_parameter);
+  if (!argv_front_flag)
+  {
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+    sprintf(new_argv[argv_index], "%s", file_parameter);
+  }
 }
 
 /* SQ-fuzz generate random argv */
@@ -7388,6 +7402,14 @@ static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[]
   new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
   sprintf(new_argv[argv_index], "%s", *argv);
   argv_index++;
+
+  if (argv_front_flag)
+  {
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+    sprintf(new_argv[argv_index], "%s", file_parameter);
+    argv_index++;
+  }
+
   for (int i = 0; i < parameter_count; i++)
   {
     if (parameter[i].must)
@@ -7426,9 +7448,11 @@ static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[]
       }
     }
   }
-
-  new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
-  sprintf(new_argv[argv_index], "%s", file_parameter);
+  if (!argv_front_flag)
+  {
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
+    sprintf(new_argv[argv_index], "%s", file_parameter);
+  }
 }
 
 /* SQ-fuzz fuzz_one */
@@ -7979,6 +8003,7 @@ static void usage(u8 *argv0)
        "Execution control settings:\n\n"
 
        "  -s xml        - add argv file information\n"
+       "  -w            - let file path in front of argv\n"
        "  -f file       - location read by the fuzzed program (stdin)\n"
        "  -t msec       - timeout for each run (auto-scaled, 50-%u ms)\n"
        "  -m megs       - memory limit for child process (%u MB)\n"
@@ -8745,7 +8770,7 @@ int main(int argc, char **argv)
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
   char *xml_position;
 
-  while ((opt = getopt(argc, argv, "+i:o:s:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:s:w:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
 
     switch (opt)
     {
@@ -8783,6 +8808,10 @@ int main(int argc, char **argv)
 
       argv_fuzz_flag = 1;
 
+      break;
+
+    case 'w': /* setting xml file */
+      argv_front_flag = 1;
       break;
 
     case 'M':
@@ -9044,6 +9073,11 @@ int main(int argc, char **argv)
 
   if (getenv("AFL_LD_PRELOAD"))
     FATAL("Use AFL_PRELOAD instead of AFL_LD_PRELOAD");
+
+  if (argv_front_flag)
+  {
+    OKF("argv_front_flag on");
+  }
 
   // save in orig_cmdline e.g. ./afl-fuzz -s ../parameters.xml -i i1 -o o1 -- 123
   save_cmdline(argc, argv);

@@ -6,7 +6,7 @@
 
 #define parameter_array_size 50
 #define parameter_strings_long 50
-#define variable_array_size 10
+#define variable_array_size 18
 
 struct parameter_list
 {
