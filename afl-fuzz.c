@@ -242,17 +242,17 @@ static FILE *plot_file; /* Gnuplot output file              */
 struct queue_entry
 {
 
-  u8 *fname;                        /* File name for the test case      */
-  _Bool argv[parameter_array_size]; /* SQ-fuzz argv path */
-  u32 len;                          /* Input length                     */
-  u8 cal_failed,                    /* Calibration failed?              */
-      trim_done,                    /* Trimmed?                         */
-      was_fuzzed,                   /* Had any fuzzing done yet?        */
-      passed_det,                   /* Deterministic stages passed?     */
-      has_new_cov,                  /* Triggers new coverage?           */
-      var_behavior,                 /* Variable behavior?               */
-      favored,                      /* Currently favored?               */
-      fs_redundant;                 /* Marked as redundant in the fs?   */
+  u8 *fname;                      /* File name for the test case      */
+  int argv[parameter_array_size]; /* SQ-fuzz argv path                */
+  u32 len;                        /* Input length                     */
+  u8 cal_failed,                  /* Calibration failed?              */
+      trim_done,                  /* Trimmed?                         */
+      was_fuzzed,                 /* Had any fuzzing done yet?        */
+      passed_det,                 /* Deterministic stages passed?     */
+      has_new_cov,                /* Triggers new coverage?           */
+      var_behavior,               /* Variable behavior?               */
+      favored,                    /* Currently favored?               */
+      fs_redundant;               /* Marked as redundant in the fs?   */
 
   u32 bitmap_size, /* Number of bits set in bitmap     */
       exec_cksum;  /* Checksum of the execution trace  */
@@ -302,12 +302,6 @@ static u8 argv_fuzz_flag = 0;
 /* SQ-fuzz argv_flag */
 static u8 argv_front_flag = 0;
 
-/* SQ-fuzz IMPLICIT_VARIABLES */
-char IMPLICIT_VARIABLES[][16] = {
-    "\\[INPUT_FILE\\]",
-    "\\[INT\\]",
-    "\\[STRING\\]",
-    "\\[UNSIINT\\]"};
 /* Fuzzing stages */
 
 enum
@@ -823,7 +817,7 @@ static void mark_as_redundant(struct queue_entry *q, u8 state)
 }
 
 /* SQ-fuzz mantain add argv queue info */
-static void argv_add_to_queue(u8 *fname, u32 len, u8 passed_det, _Bool argv_array[])
+static void argv_add_to_queue(u8 *fname, u32 len, u8 passed_det, int argv_array[])
 {
   struct queue_entry *q = ck_alloc(sizeof(struct queue_entry));
 
@@ -1605,16 +1599,16 @@ static void read_testcases(void)
       passed_det = 1;
     ck_free(dfn);
 
-    _Bool arg[parameter_array_size] = {0};
+    int arg[parameter_array_size] = {-1};
     for (int i = 0; i < parameter_count; i++)
     {
       if (parameter[i].must)
       {
-        arg[i] = 1;
+        arg[i] = 0;
       }
       else
       {
-        arg[i] = 0;
+        arg[i] = -1;
       }
     }
     if (argv_fuzz_flag)
@@ -3377,7 +3371,7 @@ static void write_crash_readme(void)
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 
-static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault, _Bool argv_array[])
+static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault, int argv_array[])
 {
 
   u8 *fn = "";
@@ -5094,7 +5088,7 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
 
 /* SQ-fuzz run rarget */
 
-EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len, _Bool argv_array[])
+EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len, int argv_array[])
 {
   u8 fault;
 
@@ -7351,7 +7345,7 @@ static void reset_forkserv_argvs(char **new_argvs)
 
 /* SQ-fuzz use argv array to malloc argv */
 
-static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
+static void generate_arg(char **new_argv, char **argv, int argv_array[])
 {
   int argv_index = 0;
   new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
@@ -7367,13 +7361,12 @@ static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
 
   for (int i = 0; i < parameter_count; i++)
   {
-    if (argv_array[i])
+    if (argv_array[i] != -1)
     {
-      argv_array[i] = 1;
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      strcpy(buf, parameter[i].parameter[argv_array[i]]);
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7396,7 +7389,7 @@ static void generate_arg(char **new_argv, char **argv, _Bool argv_array[])
 
 /* SQ-fuzz generate random argv */
 
-static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[])
+static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
 {
   int argv_index = 0;
   new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
@@ -7414,11 +7407,12 @@ static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[]
   {
     if (parameter[i].must)
     {
-      argv_array[i] = 1;
+      int ur = UR(parameter[i].count);
+      argv_array[i] = ur;
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      strcpy(buf, parameter[i].parameter[ur]);
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7432,10 +7426,11 @@ static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[]
     }
     else if (UR(2) != 0)
     {
-      argv_array[i] = 1;
+      int ur = UR(parameter[i].count);
+      argv_array[i] = ur;
       char *substr = NULL;
       char buf[parameter_strings_long];
-      strcpy(buf, parameter[i].parameter[UR(parameter[i].count)]);
+      strcpy(buf, parameter[i].parameter[ur]);
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7446,6 +7441,10 @@ static void random_generate_arg(char **new_argv, char **argv, _Bool argv_array[]
 
         substr = strtok(NULL, " ");
       }
+    }
+    else
+    {
+      argv_array[i] = -1;
     }
   }
   if (!argv_front_flag)
@@ -7495,12 +7494,16 @@ static char **argv_fuzz_one(char **argv)
   stage_max = 100;
   stage_name = "arg_gen";
   char **new_argv;
-  _Bool run_argv[parameter_array_size];
+  int run_argv[parameter_array_size];
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++)
   {
     new_argv = (char **)ck_alloc(sizeof(char *) * 200);
     memset(new_argv, 0, sizeof(char *) * 200);
-    memset(run_argv, 0, sizeof(run_argv));
+    for (int i = 0; i < parameter_array_size; i++)
+    {
+      run_argv[i] = -1;
+    }
+    // memset(run_argv, -1, sizeof(run_argv));
 
     random_generate_arg(new_argv, argv, run_argv);
 

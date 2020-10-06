@@ -4,9 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define parameter_array_size 50
-#define parameter_strings_long 50
-#define variable_array_size 18
+#define parameter_array_size 100
+#define parameter_strings_long 60
+#define variable_array_size 30
 
 struct parameter_list
 {
