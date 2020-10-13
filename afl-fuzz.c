@@ -1516,7 +1516,7 @@ static void setup_post(void)
 /* Read all testcases from the input directory, then queue them for testing.
    Called at startup. */
 
-static void read_testcases(void)
+static void read_testcases(int argv_array[])
 {
 
   struct dirent **nl;
@@ -1599,21 +1599,9 @@ static void read_testcases(void)
       passed_det = 1;
     ck_free(dfn);
 
-    int arg[parameter_array_size] = {-1};
-    for (int i = 0; i < parameter_count; i++)
-    {
-      if (parameter[i].must)
-      {
-        arg[i] = 0;
-      }
-      else
-      {
-        arg[i] = -1;
-      }
-    }
     if (argv_fuzz_flag)
     {
-      argv_add_to_queue(fn, st.st_size, passed_det, arg);
+      argv_add_to_queue(fn, st.st_size, passed_det, argv_array);
     }
     else
     {
@@ -9109,7 +9097,46 @@ int main(int argc, char **argv)
 
   //創建工作資料夾（hang, queue....
   setup_dirs_fds();
-  read_testcases();
+
+  // 檢查是否為 shell 且有無插樁
+  check_binary(argv[optind]);
+
+  //偵測argvs裡有沒有"@@"
+  detect_file_args(argv + optind + 1);
+  if (argv_fuzz_flag)
+  {
+    detect_file_parm();
+    printf("file_parameter = %s\n", file_parameter);
+  }
+
+  if (qemu_mode)
+    use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
+  else
+    use_argv = argv + optind;
+
+  int first_argv[parameter_array_size];
+  if (argv_fuzz_flag)
+  {
+    char **temp_argv;
+    temp_argv = (char **)ck_alloc(sizeof(char *) * 200);
+    memset(temp_argv, 0, sizeof(char *) * 200);
+    for (int i = 0; i < parameter_array_size; i++)
+    {
+      first_argv[i] = -1;
+    }
+    random_generate_arg(temp_argv, argv, first_argv);
+    use_argv = temp_argv;
+  }
+
+  OKF("init argv");
+  char **now = use_argv;
+  while (*now)
+  {
+    OKF("%s", *now);
+    now++;
+  }
+
+  read_testcases(first_argv);
   load_auto();
 
   //copy files from original dir to xxx/queue
@@ -9123,25 +9150,10 @@ int main(int argc, char **argv)
   if (!timeout_given)
     find_timeout();
 
-  //偵測argvs裡有沒有"@@"
-  detect_file_args(argv + optind + 1);
-  if (argv_fuzz_flag)
-  {
-    detect_file_parm();
-    printf("file_parameter = %s\n", file_parameter);
-  }
   if (!out_file)
     setup_stdio_file();
 
-  // 檢查是否為 shell 且有無插樁
-  check_binary(argv[optind]);
-
   start_time = get_cur_time();
-
-  if (qemu_mode)
-    use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
-  else
-    use_argv = argv + optind;
 
   // 測試現有文集
   perform_dry_run(use_argv);
