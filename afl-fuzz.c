@@ -7384,6 +7384,17 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
   sprintf(new_argv[argv_index], "%s", *argv);
   argv_index++;
 
+  if (qemu_mode)
+  {
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
+    sprintf(new_argv[argv_index], "%s", *(argv + 1));
+    argv_index++;
+
+    new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*argv) + 1);
+    sprintf(new_argv[argv_index], "%s", *(argv + 2));
+    argv_index++;
+  }
+
   if (argv_front_flag)
   {
     new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(file_parameter) + 1);
@@ -9097,7 +9108,6 @@ int main(int argc, char **argv)
 
   //創建工作資料夾（hang, queue....
   setup_dirs_fds();
-
   // 檢查是否為 shell 且有無插樁
   check_binary(argv[optind]);
 
@@ -9124,7 +9134,7 @@ int main(int argc, char **argv)
     {
       first_argv[i] = -1;
     }
-    random_generate_arg(temp_argv, argv, first_argv);
+    random_generate_arg(temp_argv, use_argv, first_argv);
     use_argv = temp_argv;
   }
 
