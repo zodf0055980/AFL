@@ -828,7 +828,7 @@ static void argv_add_to_queue(u8 *fname, u32 len, u8 passed_det, int argv_array[
   q->depth = cur_depth + 1;
   q->passed_det = passed_det;
 
-  for (int i = 0; i < parameter_count; i++)
+  for (int i = 0; i < parameter_array_size; i++)
   {
     q->argv[i] = argv_array[i];
   }
@@ -2755,7 +2755,7 @@ static u8 calibrate_case(char **argv, struct queue_entry *q, u8 *use_mem,
   /* Make sure the forkserver is up before we do anything, and let's not
      count its spin-up time toward binary calibration. */
 
-  if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
+  if (dumb_mode != 1 && !no_forkserver && !forksrv_pid && !argv_no_forkserver)
     init_forkserver(argv);
 
   if (q->exec_cksum)
@@ -3405,14 +3405,8 @@ static u8 save_if_interesting(char **argv, void *mem, u32 len, u8 fault, int arg
     }
 
     /* SQ-fuzz save */
-    if (argv_fuzz_flag)
-    {
-      argv_add_to_queue(fn, len, 0, argv_array);
-    }
-    else
-    {
-      add_to_queue(fn, len, 0);
-    }
+
+    argv_add_to_queue(fn, len, 0, argv_array);
 
     if (hnb == 2)
     {
@@ -5073,13 +5067,43 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len)
   return 0;
 }
 
+/* SQ-fuzz reset forkserv */
+
+static void reset_forkserv_argvs(char **new_argvs)
+{
+
+  if (forksrv_pid > 0)
+  {
+    kill(forksrv_pid, SIGKILL);
+    if (waitpid(forksrv_pid, NULL, 0) <= 0)
+    {
+      WARNF("error waitpid\n");
+    }
+    forksrv_pid = 0;
+  }
+
+  if (child_pid > 0)
+  {
+    kill(child_pid, SIGKILL);
+    child_pid = 0;
+  }
+
+  if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
+  {
+    close(fsrv_ctl_fd);
+    close(fsrv_st_fd);
+
+    init_forkserver(new_argvs);
+  }
+}
+
 /* SQ-fuzz run rarget */
 
 EXP_ST u8 argv_common_fuzz_stuff(char **argv, u8 *out_buf, u32 len, int argv_array[])
 {
   u8 fault;
 
-  // if (post_handler)   ???
+  // if (post_handler)
   // {
 
   //   out_buf = post_handler(out_buf, &len);
@@ -7300,36 +7324,6 @@ abandon_entry:
 #undef FLIP_BIT
 }
 
-/* SQ-fuzz reset forkserv */
-
-static void reset_forkserv_argvs(char **new_argvs)
-{
-
-  if (forksrv_pid > 0)
-  {
-    kill(forksrv_pid, SIGKILL);
-    if (waitpid(forksrv_pid, NULL, 0) <= 0)
-    {
-      WARNF("error waitpid\n");
-    }
-    forksrv_pid = 0;
-  }
-
-  if (child_pid > 0)
-  {
-    kill(child_pid, SIGKILL);
-    child_pid = 0;
-  }
-
-  if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
-  {
-    close(fsrv_ctl_fd);
-    close(fsrv_st_fd);
-
-    init_forkserver(new_argvs);
-  }
-}
-
 /* SQ-fuzz use argv array to malloc argv */
 
 static void generate_arg(char **new_argv, char **argv, int argv_array[])
@@ -7364,7 +7358,7 @@ static void generate_arg(char **new_argv, char **argv, int argv_array[])
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[argv_array[i] - 1]);
+      strcpy(buf, parameter[i].parameter[argv_array[i] - 1]); // choose argv_array[i] +1
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7394,6 +7388,7 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
   sprintf(new_argv[argv_index], "%s", *argv);
   argv_index++;
 
+  // add qemu argv
   if (qemu_mode)
   {
     new_argv[argv_index] = (char *)ck_alloc(sizeof(char) * strlen(*(argv + 1)) + 1);
@@ -7417,11 +7412,11 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
     if (parameter[i].must)
     {
       int ur = UR(parameter[i].count);
-      argv_array[i] = ur + 1;
+      argv_array[i] = ur + 1; // store parameter + 1
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[ur - 1]);
+      strcpy(buf, parameter[i].parameter[ur]); // choose parameter
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7436,7 +7431,7 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
     else if (UR(2) != 0)
     {
       int ur = UR(parameter[i].count);
-      argv_array[i] = ur + 1;
+      argv_array[i] = ur + 1; // store parameter + 1
       char *substr = NULL;
       char buf[parameter_strings_long];
       strcpy(buf, parameter[i].parameter[ur]);
@@ -7498,6 +7493,7 @@ static char **argv_fuzz_one(char **argv)
 
   out_buf = (u8 *)ck_alloc_nozero(len);
   /* skip CALIBRATION, TRIMMING, PERFORMANCE SCORE */
+  memcpy(out_buf, in_buf, len);
 
   stage_short = "arg1";
   stage_max = 100;
@@ -7508,10 +7504,7 @@ static char **argv_fuzz_one(char **argv)
   {
     new_argv = (char **)ck_alloc(sizeof(char *) * 200);
     memset(new_argv, 0, sizeof(char *) * 200);
-    for (int i = 0; i < parameter_array_size; i++)
-    {
-      run_argv[i] = 0;
-    }
+    memset(run_argv, 0, sizeof(run_argv));
 
     random_generate_arg(new_argv, argv, run_argv);
 
@@ -9119,6 +9112,7 @@ int main(int argc, char **argv)
   setup_dirs_fds();
 
   int first_argv[parameter_array_size];
+  memset(first_argv, 0, sizeof(first_argv));
   if (argv_random_first == 0)
   {
     for (int i = 0; i < parameter_count; i++)
@@ -9126,10 +9120,6 @@ int main(int argc, char **argv)
       if (parameter[i].must)
       {
         first_argv[i] = 1;
-      }
-      else
-      {
-        first_argv[i] = 0;
       }
     }
   }
@@ -9186,7 +9176,7 @@ int main(int argc, char **argv)
     use_argv = argv + optind;
 
   char **init_argv = (char **)ck_alloc(sizeof(char *) * 200);
-  memset(init_argv, 0, sizeof(char *) * 200);
+  memset(init_argv, 0, sizeof(char) * 200);
   generate_arg(init_argv, use_argv, first_argv);
   use_argv = init_argv;
 

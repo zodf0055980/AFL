@@ -113,6 +113,7 @@ void print_parse_result()
             printf("%s\n", parameter[i].parameter[j]);
         }
     }
+    printf("parameter count = %d\n", parameter_count);
     printf("file:\n%s:\n", file_parameter);
 }
 
