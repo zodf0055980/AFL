@@ -301,6 +301,8 @@ static s32 interesting_32[] = {INTERESTING_8, INTERESTING_16, INTERESTING_32};
 static u8 argv_fuzz_flag = 0;
 /* SQ-fuzz argv_flag */
 static u8 argv_front_flag = 0;
+/* SQ-fuzz argv_flag */
+static u8 argv_random_first = 0;
 
 /* Fuzzing stages */
 
@@ -825,13 +827,10 @@ static void argv_add_to_queue(u8 *fname, u32 len, u8 passed_det, int argv_array[
   q->len = len;
   q->depth = cur_depth + 1;
   q->passed_det = passed_det;
-  if (argv_array)
+
+  for (int i = 0; i < parameter_count; i++)
   {
-    memcpy(q->argv, argv_array, sizeof(q->argv));
-  }
-  else
-  {
-    memset(q->argv, 0, sizeof(q->argv));
+    q->argv[i] = argv_array[i];
   }
 
   if (q->depth > max_depth)
@@ -1516,7 +1515,7 @@ static void setup_post(void)
 /* Read all testcases from the input directory, then queue them for testing.
    Called at startup. */
 
-static void read_testcases(void)
+static void read_testcases(int argv_array[])
 {
 
   struct dirent **nl;
@@ -1599,21 +1598,9 @@ static void read_testcases(void)
       passed_det = 1;
     ck_free(dfn);
 
-    int arg[parameter_array_size] = {-1};
-    for (int i = 0; i < parameter_count; i++)
-    {
-      if (parameter[i].must)
-      {
-        arg[i] = 0;
-      }
-      else
-      {
-        arg[i] = -1;
-      }
-    }
     if (argv_fuzz_flag)
     {
-      argv_add_to_queue(fn, st.st_size, passed_det, arg);
+      argv_add_to_queue(fn, st.st_size, passed_det, argv_array);
     }
     else
     {
@@ -7372,12 +7359,12 @@ static void generate_arg(char **new_argv, char **argv, int argv_array[])
 
   for (int i = 0; i < parameter_count; i++)
   {
-    if (argv_array[i] != -1)
+    if (argv_array[i] != 0)
     {
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[argv_array[i]]);
+      strcpy(buf, parameter[i].parameter[argv_array[i] - 1]);
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7430,11 +7417,11 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
     if (parameter[i].must)
     {
       int ur = UR(parameter[i].count);
-      argv_array[i] = ur;
+      argv_array[i] = ur + 1;
       char *substr = NULL;
       char buf[parameter_strings_long];
 
-      strcpy(buf, parameter[i].parameter[ur]);
+      strcpy(buf, parameter[i].parameter[ur - 1]);
       substr = strtok(buf, " ");
 
       while (substr != NULL)
@@ -7449,7 +7436,7 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
     else if (UR(2) != 0)
     {
       int ur = UR(parameter[i].count);
-      argv_array[i] = ur;
+      argv_array[i] = ur + 1;
       char *substr = NULL;
       char buf[parameter_strings_long];
       strcpy(buf, parameter[i].parameter[ur]);
@@ -7466,7 +7453,7 @@ static void random_generate_arg(char **new_argv, char **argv, int argv_array[])
     }
     else
     {
-      argv_array[i] = -1;
+      argv_array[i] = 0;
     }
   }
   if (!argv_front_flag)
@@ -7523,9 +7510,8 @@ static char **argv_fuzz_one(char **argv)
     memset(new_argv, 0, sizeof(char *) * 200);
     for (int i = 0; i < parameter_array_size; i++)
     {
-      run_argv[i] = -1;
+      run_argv[i] = 0;
     }
-    // memset(run_argv, -1, sizeof(run_argv));
 
     random_generate_arg(new_argv, argv, run_argv);
 
@@ -8788,6 +8774,7 @@ int main(int argc, char **argv)
   struct timezone tz;
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
+  SAYF(cCYA "Yuan-fuzz " cBRI VERSION cRST " by <zodf0055980@google.com>\n");
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 
@@ -8795,7 +8782,7 @@ int main(int argc, char **argv)
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
   char *xml_position;
 
-  while ((opt = getopt(argc, argv, "+i:o:s:w:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:s:w:r:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
 
     switch (opt)
     {
@@ -8837,8 +8824,12 @@ int main(int argc, char **argv)
 
     case 'w': /* setting xml file */
       argv_front_flag = 1;
+      OKF("argv_front_flag on");
       break;
-
+    case 'r': /* argv init random */
+      argv_random_first = 1;
+      OKF("argv_random_first on");
+      break;
     case 'M':
     { /* master sync ID */
 
@@ -9099,11 +9090,6 @@ int main(int argc, char **argv)
   if (getenv("AFL_LD_PRELOAD"))
     FATAL("Use AFL_PRELOAD instead of AFL_LD_PRELOAD");
 
-  if (argv_front_flag)
-  {
-    OKF("argv_front_flag on");
-  }
-
   // save in orig_cmdline e.g. ./afl-fuzz -s ../parameters.xml -i i1 -o o1 -- 123
   save_cmdline(argc, argv);
 
@@ -9131,7 +9117,41 @@ int main(int argc, char **argv)
 
   //創建工作資料夾（hang, queue....
   setup_dirs_fds();
-  read_testcases();
+
+  int first_argv[parameter_array_size];
+  if (argv_random_first == 0)
+  {
+    for (int i = 0; i < parameter_count; i++)
+    {
+      if (parameter[i].must)
+      {
+        first_argv[i] = 1;
+      }
+      else
+      {
+        first_argv[i] = 0;
+      }
+    }
+  }
+  else
+  {
+    for (int i = 0; i < parameter_count; i++)
+    {
+      if (parameter[i].must)
+      {
+        first_argv[i] = 1;
+      }
+      else
+      {
+        int ur = UR(parameter[i].count + 1);
+        first_argv[i] = ur;
+        OKF("parameter coint = %d", parameter[i].count);
+        OKF("ur = %d", ur);
+      }
+    }
+  }
+
+  read_testcases(first_argv);
   load_auto();
 
   //copy files from original dir to xxx/queue
@@ -9164,6 +9184,11 @@ int main(int argc, char **argv)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
+
+  char **init_argv = (char **)ck_alloc(sizeof(char *) * 200);
+  memset(init_argv, 0, sizeof(char *) * 200);
+  generate_arg(init_argv, use_argv, first_argv);
+  use_argv = init_argv;
 
   OKF("init argv");
   char **now = use_argv;
